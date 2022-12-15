@@ -1,4 +1,4 @@
-module github.com/strikesecurity/strikememongo
+module github.com/rameshsunkara/strikememongo
 
 go 1.14
 
