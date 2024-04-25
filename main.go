@@ -87,6 +87,7 @@ func StartContainerWithOptions(opts *Options) (*Server, error) {
 	},
 		&container.HostConfig{
 			NetworkMode: "host",
+			AutoRemove:  true,
 		}, nil, nil, "")
 	if err != nil {
 		panic(err)
