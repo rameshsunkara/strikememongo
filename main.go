@@ -2,6 +2,7 @@ package strikememongo
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/client"
 	"github.com/strikesecurity/strikememongo/monitor"
 	"github.com/strikesecurity/strikememongo/strikememongolog"
 )
@@ -32,6 +36,132 @@ func Start(version string) (*Server, error) {
 	return StartWithOptions(&Options{
 		MongoVersion: version,
 	})
+}
+
+func StartContainer(version string) (*Server, error) {
+	return StartContainerWithOptions(&Options{
+		MongoVersion: version,
+		DownloadURL:  "docker",
+	})
+}
+
+func StartContainerWithOptions(opts *Options) (*Server, error) {
+	err := opts.fillDefaults()
+	if err != nil {
+		return nil, err
+	}
+
+	logger := opts.getLogger()
+
+	logger.Infof("Starting MongoDB container with options %#v", opts)
+
+	if opts.ShouldUseReplica {
+		panic("UseContainer and ShouldUseReplica cannot be used at the same time (yet)")
+	}
+
+	apiClient, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
+	if err != nil {
+		panic(err)
+	}
+	defer apiClient.Close()
+
+	mongoImageName := fmt.Sprintf("mongo:%s", opts.MongoVersion)
+
+	reader, err := apiClient.ImagePull(context.Background(), mongoImageName, image.PullOptions{})
+	if err != nil {
+		panic(err)
+	}
+
+	defer reader.Close()
+	// cli.ImagePull is asynchronous.
+	// The reader needs to be read completely for the pull operation to complete.
+	// If stdout is not required, consider using io.Discard instead of os.Stdout.
+	io.Copy(os.Stdout, reader)
+
+	ctx := context.Background()
+
+	resp, err := apiClient.ContainerCreate(ctx, &container.Config{
+		Image: mongoImageName,
+		Cmd:   []string{"--port", strconv.Itoa(opts.Port)},
+		Tty:   true,
+	},
+		&container.HostConfig{
+			NetworkMode: "host",
+		}, nil, nil, "")
+	if err != nil {
+		panic(err)
+	}
+
+	if err := apiClient.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		panic(err)
+	}
+
+	// stdoutHandler, startupErrCh, startupPortCh := stdoutHandler(logger)
+
+	/*
+		statusCh, errCh := apiClient.ContainerWait(ctx, resp.ID, container.WaitConditionNotRunning)
+		select {
+		case err := <-errCh:
+			if err != nil {
+				panic(err)
+			}
+		case <-statusCh:
+		}
+	*/
+
+	// out, err := apiClient.ContainerLogs(ctx, resp.ID, container.LogsOptions{ShowStdout: true, ShowStderr: true})
+	// if err != nil {
+	// 	panic(err)
+	// }
+	// go io.Copy(stdoutHandler, out)
+
+	// stdcopy.StdCopy(os.Stdout, os.Stderr, out)
+
+	//
+
+	// shove our info into cmd so the rest of the code works
+
+	logger.Debugf("Started mongod; starting watcher")
+
+	// Start a watcher: the watcher is a subprocess that ensure if this process
+	// dies, the mongo server will be killed (and not reparented under init)
+	// watcherCmd, err := monitor.RunMonitor(os.Getpid(), cmd.Process.Pid)
+	// if err != nil {
+	// 	return nil, err
+	// }
+
+	logger.Debugf("Started watcher; waiting for mongod to report port number")
+
+	// Wait for the stdout handler to report the server's port number (or a
+	// startup error)
+	/*
+		var port int
+		select {
+		case p := <-startupPortCh:
+			port = p
+		case err := <-startupErrCh:
+			/*killErr := cmd.Process.Kill()
+			if killErr != nil {
+				logger.Warnf("error stopping mongo process: %s", killErr)
+			}
+			return nil, err
+		case <-time.After(opts.StartupTimeout):
+				killErr := cmd.Process.Kill()
+				if killErr != nil {
+					logger.Warnf("error stopping mongo process: %s", killErr)
+				}
+
+			return nil, errors.New("timed out waiting for mongod to start")
+		}
+	*/
+
+	return &Server{
+		//cmd        *exec.Cmd
+		// watcherCmd: watcherCmd,
+		//dbDir      string
+		logger: logger,
+		port:   opts.Port,
+	}, nil
 }
 
 // StartWithOptions is like Start(), but accepts options.
@@ -57,9 +187,7 @@ func StartWithOptions(opts *Options) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	// Construct the command and attach stdout/stderr handlers
-
 	//  Safe to pass binPath and dbDir
 	//nolint:gosec
 	cmd := exec.Command(binPath, "--storageEngine", "ephemeralForTest", "--dbpath", dbDir, "--port", strconv.Itoa(opts.Port))
